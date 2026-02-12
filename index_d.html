@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Radial Depth Mapper</title>
+<title>Lake Mapping Pro</title>
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-
-<!-- Heatmap Plugin -->
 <script src="https://cdn.jsdelivr.net/npm/leaflet.heat/dist/leaflet-heat.js"></script>
 
 <style>
 body{margin:0;font-family:-apple-system,system-ui}
-#map{height:55vh;min-height:340px}
+#map{height:55vh;min-height:350px}
 .panel{padding:12px}
 .row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-button,input{padding:8px;border-radius:8px;border:1px solid #ccc}
+button,input,select{padding:8px;border-radius:8px;border:1px solid #ccc}
 .card{border:1px solid #ddd;padding:8px;border-radius:8px;margin:6px 0}
 .mono{font-family:monospace}
+.compass{width:90px;height:90px;border:2px solid #000;border-radius:50%;position:relative}
+.needle{position:absolute;left:50%;top:50%;width:2px;height:40px;background:black;transform-origin:50% 100%;transform:translate(-50%,-100%) rotate(0deg)}
 </style>
 </head>
 
@@ -29,25 +29,38 @@ button,input{padding:8px;border-radius:8px;border:1px solid #ccc}
 <div class="panel">
 
 <div class="row">
-<button onclick="setSwim()">📍 Swim setzen</button>
+<input id="lakeName" placeholder="See Name">
+<button onclick="loadLake()">See laden</button>
+<button onclick="startOutline()">Umriss zeichnen</button>
+<button onclick="finishOutline()">Umriss fertig</button>
 </div>
 
 <div class="row">
-<label>Start Radius</label>
-<input id="startR" type="number" value="20">
-<label>Max Radius</label>
-<input id="maxR" type="number" value="80">
-<label>Schritt</label>
-<input id="stepR" type="number" value="10">
-<label>Winkel Schritt</label>
-<input id="angleStep" type="number" value="20">
-<button onclick="generateGrid()">🟢 Kreis Raster</button>
+<select id="swimSelect" onchange="changeSwim()"></select>
+<button onclick="addSwim()">+ Swim</button>
+</div>
+
+<div class="row">
+<label>Start</label><input id="startR" type="number" value="20">
+<label>Max</label><input id="maxR" type="number" value="80">
+<label>Schritt</label><input id="stepR" type="number" value="10">
+<label>Winkel</label><input id="angleStep" type="number" value="20">
+<button onclick="generateGrid()">Kreis Raster</button>
 </div>
 
 <div class="row">
 <input id="depth" placeholder="Tiefe (m)">
-<button onclick="saveDepth()">💾 Tiefe speichern</button>
-<button onclick="toggleHeat()">🌡 Heatmap</button>
+<button onclick="saveDepth()">Tiefe speichern</button>
+<button onclick="toggleHeat()">Heatmap</button>
+</div>
+
+<div class="row">
+<div class="compass"><div id="needle" class="needle"></div></div>
+<div>
+<div>Distanz: <span id="dist" class="mono">-</span></div>
+<div>Winkel: <span id="bear" class="mono">-</span></div>
+<div>Wraps: <span id="wraps" class="mono">-</span></div>
+</div>
 </div>
 
 <div id="info" class="card"></div>
@@ -57,141 +70,181 @@ button,input{padding:8px;border-radius:8px;border:1px solid #ccc}
 <script>
 
 let map=L.map('map').setView([52.85,8.05],12);
-
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
-subdomains:'abcd',
-maxZoom:19
-}).addTo(map);
+subdomains:'abcd',maxZoom:19}).addTo(map);
 
-let swim=null;
-let grid=[];
-let markers=[];
-let heatLayer=null;
+let lakes=JSON.parse(localStorage.getItem("lakeMapper")||"{}");
+let currentLake=null;
+let drawing=false;
 let selectedPoint=null;
+let heatLayer=null;
+let heading=null;
+
+function save(){localStorage.setItem("lakeMapper",JSON.stringify(lakes))}
 
 function toRad(d){return d*Math.PI/180}
 function toDeg(r){return r*180/Math.PI}
+function clamp360(d){return(d%360+360)%360}
 
-function destination(lat,lng,bearing,dist){
+function hav(a,b){
+let R=6371000;
+let dLat=toRad(b.lat-a.lat);
+let dLng=toRad(b.lng-a.lng);
+let lat1=toRad(a.lat);
+let lat2=toRad(b.lat);
+let x=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+return 2*R*Math.asin(Math.sqrt(x));
+}
+
+function bearing(a,b){
+let lat1=toRad(a.lat),lat2=toRad(b.lat);
+let dLng=toRad(b.lng-a.lng);
+let y=Math.sin(dLng)*Math.cos(lat2);
+let x=Math.cos(lat1)*Math.sin(lat2)-Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLng);
+return clamp360(toDeg(Math.atan2(y,x)));
+}
+
+function dest(lat,lng,bearing,dist){
 let R=6371000;
 let br=toRad(bearing);
 let lat1=toRad(lat);
 let lng1=toRad(lng);
 let dr=dist/R;
-
 let lat2=Math.asin(Math.sin(lat1)*Math.cos(dr)+Math.cos(lat1)*Math.sin(dr)*Math.cos(br));
 let lng2=lng1+Math.atan2(Math.sin(br)*Math.sin(dr)*Math.cos(lat1),Math.cos(dr)-Math.sin(lat1)*Math.sin(lat2));
-
-return {lat:toDeg(lat2),lng:toDeg(lng2)};
+return{lat:toDeg(lat2),lng:toDeg(lng2)};
 }
 
-function setSwim(){
+function loadLake(){
+let name=lakeName.value.trim();
+if(!name)return;
+if(!lakes[name])lakes[name]={outline:[],swims:[],grid:[]};
+currentLake=name;
+renderSwims();
+drawOutline();
+drawGrid();
+}
+
+function startOutline(){drawing=true;lakes[currentLake].outline=[];drawOutline()}
+function finishOutline(){drawing=false;drawOutline()}
+
+map.on("click",e=>{
+if(drawing){
+lakes[currentLake].outline.push({lat:e.latlng.lat,lng:e.latlng.lng});
+drawOutline();save();
+}
+})
+
+function drawOutline(){
+if(!currentLake)return;
+let o=lakes[currentLake].outline;
+if(window.outlineLayer)map.removeLayer(outlineLayer);
+if(o.length>1)outlineLayer=L.polygon(o,{fillOpacity:0.05}).addTo(map);
+}
+
+function addSwim(){
 navigator.geolocation.getCurrentPosition(pos=>{
-swim={lat:pos.coords.latitude,lng:pos.coords.longitude};
-L.marker(swim).addTo(map).bindPopup("Swim");
-map.setView([swim.lat,swim.lng],16);
-});
+let swim={lat:pos.coords.latitude,lng:pos.coords.longitude,name:"Swim "+(lakes[currentLake].swims.length+1)};
+lakes[currentLake].swims.push(swim);
+save();renderSwims();
+})
 }
+
+function renderSwims(){
+let sel=swimSelect;sel.innerHTML="";
+lakes[currentLake].swims.forEach((s,i)=>{
+let o=document.createElement("option");
+o.value=i;o.textContent=s.name;
+sel.appendChild(o);
+})
+}
+
+function changeSwim(){drawGrid()}
 
 function generateGrid(){
-if(!swim)return alert("Erst Swim setzen");
+let lake=lakes[currentLake];
+lake.grid=[];
+let swim=lake.swims[swimSelect.value];
+if(!swim)return;
 
-clearGrid();
-
-let startR=+startR.value;
-let maxR=+maxR.value;
-let stepR=+stepR.value;
-let angleStep=+angleStep.value;
+let startR=+startR.value,maxR=+maxR.value,stepR=+stepR.value,angleStep=+angleStep.value;
 
 for(let r=startR;r<=maxR;r+=stepR){
 for(let a=0;a<360;a+=angleStep){
-let p=destination(swim.lat,swim.lng,a,r);
-let point={lat:p.lat,lng:p.lng,radius:r,angle:a,depth:null};
-grid.push(point);
-
-let marker=L.circleMarker([p.lat,p.lng],{
-radius:4,
-color:"#999",
-fillOpacity:0.5
-}).addTo(map);
-
-marker.on("click",()=>selectPoint(point,marker));
-markers.push(marker);
+let p=dest(swim.lat,swim.lng,a,r);
+lake.grid.push({lat:p.lat,lng:p.lng,depth:null});
 }
 }
-
-updateInfo();
-}
-
-function selectPoint(point,marker){
-selectedPoint=point;
-document.getElementById("info").innerHTML=
-"Radius: "+point.radius+"m<br>Winkel: "+point.angle+"°";
-}
-
-function saveDepth(){
-if(!selectedPoint)return alert("Punkt auswählen");
-
-let d=parseFloat(depth.value);
-if(!d)return alert("Tiefe eingeben");
-
-selectedPoint.depth=d;
-
-updateMarkers();
-updateHeat();
-depth.value="";
-}
-
-function updateMarkers(){
-markers.forEach((m,i)=>{
-let p=grid[i];
-if(p.depth){
-m.setStyle({color:depthColor(p.depth),fillColor:depthColor(p.depth)});
-}
-});
+save();drawGrid();
 }
 
 function depthColor(d){
-if(d<1)return "#f7e26b";
-if(d<2)return "#b6e36b";
-if(d<3)return "#6bd1e3";
-if(d<4)return "#3a7bd5";
-return "#1f3c88";
+if(d<1)return"#f7e26b";
+if(d<2)return"#b6e36b";
+if(d<3)return"#6bd1e3";
+if(d<4)return"#3a7bd5";
+return"#1f3c88";
+}
+
+function drawGrid(){
+if(!currentLake)return;
+if(window.gridLayer){gridLayer.forEach(m=>map.removeLayer(m))}
+gridLayer=[];
+let lake=lakes[currentLake];
+let swim=lake.swims[swimSelect.value];
+if(!swim)return;
+
+lake.grid.forEach(p=>{
+let m=L.circleMarker([p.lat,p.lng],{radius:5,color:p.depth?depthColor(p.depth):"#999"}).addTo(map);
+m.on("click",()=>selectPoint(p));
+gridLayer.push(m);
+})
+}
+
+function selectPoint(p){
+selectedPoint=p;
+let swim=lakes[currentLake].swims[swimSelect.value];
+let d=hav(swim,p);
+let b=bearing(swim,p);
+dist.textContent=d.toFixed(1)+"m";
+bear.textContent=b.toFixed(0)+"°";
+wraps.textContent=(d/3.6).toFixed(1);
+updateNeedle(b);
+}
+
+function saveDepth(){
+if(!selectedPoint)return;
+let d=parseFloat(depth.value);
+if(!d)return;
+selectedPoint.depth=d;
+save();drawGrid();updateHeat();
 }
 
 function updateHeat(){
 if(heatLayer)map.removeLayer(heatLayer);
-
-let heatPoints=[];
-grid.forEach(p=>{
-if(p.depth){
-heatPoints.push([p.lat,p.lng,p.depth]);
-}
-});
-
-heatLayer=L.heatLayer(heatPoints,{radius:25,blur:20});
+let data=[];
+lakes[currentLake].grid.forEach(p=>{
+if(p.depth)data.push([p.lat,p.lng,p.depth]);
+})
+heatLayer=L.heatLayer(data,{radius:30,blur:25});
 }
 
 function toggleHeat(){
 if(!heatLayer)return;
-if(map.hasLayer(heatLayer)){
-map.removeLayer(heatLayer);
-}else{
-map.addLayer(heatLayer);
-}
+if(map.hasLayer(heatLayer))map.removeLayer(heatLayer);
+else map.addLayer(heatLayer);
 }
 
-function clearGrid(){
-markers.forEach(m=>map.removeLayer(m));
-markers=[];
-grid=[];
-if(heatLayer)map.removeLayer(heatLayer);
+function updateNeedle(targetBearing){
+if(heading==null)return;
+let angle=clamp360(targetBearing-heading);
+needle.style.transform="translate(-50%,-100%) rotate("+angle+"deg)";
 }
 
-function updateInfo(){
-document.getElementById("info").innerHTML=
-"Punkte: "+grid.length;
-}
+window.addEventListener("deviceorientation",e=>{
+if(e.webkitCompassHeading)heading=e.webkitCompassHeading;
+else if(e.alpha!=null)heading=360-e.alpha;
+})
 
 </script>
 

@@ -1,250 +1,143 @@
-<!doctype html>
-<html lang="de">
+<!DOCTYPE html>
+<html>
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lake Mapping Pro</title>
+<meta charset="utf-8" />
+<title>Tiefenkarten App</title>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/leaflet.heat/dist/leaflet-heat.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw/dist/leaflet.draw.css"/>
 
 <style>
-body{margin:0;font-family:-apple-system,system-ui}
-#map{height:55vh;min-height:350px}
-.panel{padding:12px}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-button,input,select{padding:8px;border-radius:8px;border:1px solid #ccc}
-.card{border:1px solid #ddd;padding:8px;border-radius:8px;margin:6px 0}
-.mono{font-family:monospace}
-.compass{width:90px;height:90px;border:2px solid #000;border-radius:50%;position:relative}
-.needle{position:absolute;left:50%;top:50%;width:2px;height:40px;background:black;transform-origin:50% 100%;transform:translate(-50%,-100%) rotate(0deg)}
+body { margin:0; font-family:Arial; }
+#map { height: 90vh; }
+.controls {
+  padding:10px;
+  background:#f4f4f4;
+}
+button {
+  padding:6px 10px;
+  margin-right:5px;
+}
 </style>
 </head>
-
 <body>
+
+<div class="controls">
+  <button onclick="setSwim()">Swim setzen</button>
+  <button onclick="clearData()">Alles löschen</button>
+</div>
 
 <div id="map"></div>
 
-<div class="panel">
-
-<div class="row">
-<input id="lakeName" placeholder="See Name">
-<button onclick="loadLake()">See laden</button>
-<button onclick="startOutline()">Umriss zeichnen</button>
-<button onclick="finishOutline()">Umriss fertig</button>
-</div>
-
-<div class="row">
-<select id="swimSelect" onchange="changeSwim()"></select>
-<button onclick="addSwim()">+ Swim</button>
-</div>
-
-<div class="row">
-<label>Start</label><input id="startR" type="number" value="20">
-<label>Max</label><input id="maxR" type="number" value="80">
-<label>Schritt</label><input id="stepR" type="number" value="10">
-<label>Winkel</label><input id="angleStep" type="number" value="20">
-<button onclick="generateGrid()">Kreis Raster</button>
-</div>
-
-<div class="row">
-<input id="depth" placeholder="Tiefe (m)">
-<button onclick="saveDepth()">Tiefe speichern</button>
-<button onclick="toggleHeat()">Heatmap</button>
-</div>
-
-<div class="row">
-<div class="compass"><div id="needle" class="needle"></div></div>
-<div>
-<div>Distanz: <span id="dist" class="mono">-</span></div>
-<div>Winkel: <span id="bear" class="mono">-</span></div>
-<div>Wraps: <span id="wraps" class="mono">-</span></div>
-</div>
-</div>
-
-<div id="info" class="card"></div>
-
-</div>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw/dist/leaflet.draw.js"></script>
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
 
 <script>
 
-let map=L.map('map').setView([52.85,8.05],12);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
-subdomains:'abcd',maxZoom:19}).addTo(map);
+let map = L.map('map').setView([51.0, 10.0], 6);
 
-let lakes=JSON.parse(localStorage.getItem("lakeMapper")||"{}");
-let currentLake=null;
-let drawing=false;
-let selectedPoint=null;
-let heatLayer=null;
-let heading=null;
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap'
+}).addTo(map);
 
-function save(){localStorage.setItem("lakeMapper",JSON.stringify(lakes))}
+let drawnItems = new L.FeatureGroup();
+map.addLayer(drawnItems);
 
-function toRad(d){return d*Math.PI/180}
-function toDeg(r){return r*180/Math.PI}
-function clamp360(d){return(d%360+360)%360}
+let drawControl = new L.Control.Draw({
+  draw: {
+    polygon: true,
+    polyline: false,
+    rectangle: false,
+    circle: false,
+    marker: false
+  },
+  edit: {
+    featureGroup: drawnItems
+  }
+});
+map.addControl(drawControl);
 
-function hav(a,b){
-let R=6371000;
-let dLat=toRad(b.lat-a.lat);
-let dLng=toRad(b.lng-a.lng);
-let lat1=toRad(a.lat);
-let lat2=toRad(b.lat);
-let x=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
-return 2*R*Math.asin(Math.sqrt(x));
+let swimLocations = JSON.parse(localStorage.getItem("swims")) || [];
+let depthPoints = JSON.parse(localStorage.getItem("depthPoints")) || [];
+
+let heatLayer;
+
+function saveData() {
+  localStorage.setItem("swims", JSON.stringify(swimLocations));
+  localStorage.setItem("depthPoints", JSON.stringify(depthPoints));
 }
 
-function bearing(a,b){
-let lat1=toRad(a.lat),lat2=toRad(b.lat);
-let dLng=toRad(b.lng-a.lng);
-let y=Math.sin(dLng)*Math.cos(lat2);
-let x=Math.cos(lat1)*Math.sin(lat2)-Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLng);
-return clamp360(toDeg(Math.atan2(y,x)));
+function loadData() {
+  swimLocations.forEach(s => {
+    L.marker([s.lat, s.lng], {color:"green"}).addTo(map).bindPopup("Swim");
+  });
+
+  depthPoints.forEach(p => {
+    let marker = L.circleMarker([p.lat, p.lng], {radius:5})
+      .addTo(map)
+      .bindPopup("Tiefe: " + p.depth + " m");
+  });
+
+  updateHeatmap();
 }
 
-function dest(lat,lng,bearing,dist){
-let R=6371000;
-let br=toRad(bearing);
-let lat1=toRad(lat);
-let lng1=toRad(lng);
-let dr=dist/R;
-let lat2=Math.asin(Math.sin(lat1)*Math.cos(dr)+Math.cos(lat1)*Math.sin(dr)*Math.cos(br));
-let lng2=lng1+Math.atan2(Math.sin(br)*Math.sin(dr)*Math.cos(lat1),Math.cos(dr)-Math.sin(lat1)*Math.sin(lat2));
-return{lat:toDeg(lat2),lng:toDeg(lng2)};
+function setSwim() {
+  alert("Klicke auf die Karte um deinen Swim zu setzen.");
+  map.once('click', function(e) {
+    let marker = L.marker(e.latlng).addTo(map).bindPopup("Swim").openPopup();
+    swimLocations.push({lat:e.latlng.lat, lng:e.latlng.lng});
+    saveData();
+  });
 }
 
-function loadLake(){
-let name=lakeName.value.trim();
-if(!name)return;
-if(!lakes[name])lakes[name]={outline:[],swims:[],grid:[]};
-currentLake=name;
-renderSwims();
-drawOutline();
-drawGrid();
+map.on('click', function(e) {
+  let depth = prompt("Tiefe in Metern eingeben:");
+  if(depth !== null && depth !== "") {
+    let marker = L.circleMarker(e.latlng, {radius:5})
+      .addTo(map)
+      .bindPopup("Tiefe: " + depth + " m");
+
+    depthPoints.push({
+      lat: e.latlng.lat,
+      lng: e.latlng.lng,
+      depth: parseFloat(depth)
+    });
+
+    saveData();
+    updateHeatmap();
+  }
+});
+
+function updateHeatmap() {
+  if(heatLayer) {
+    map.removeLayer(heatLayer);
+  }
+
+  let heatData = depthPoints.map(p => {
+    return [p.lat, p.lng, p.depth];
+  });
+
+  heatLayer = L.heatLayer(heatData, {
+    radius: 25,
+    blur: 15,
+    maxZoom: 17
+  }).addTo(map);
 }
 
-function startOutline(){drawing=true;lakes[currentLake].outline=[];drawOutline()}
-function finishOutline(){drawing=false;drawOutline()}
-
-map.on("click",e=>{
-if(drawing){
-lakes[currentLake].outline.push({lat:e.latlng.lat,lng:e.latlng.lng});
-drawOutline();save();
-}
-})
-
-function drawOutline(){
-if(!currentLake)return;
-let o=lakes[currentLake].outline;
-if(window.outlineLayer)map.removeLayer(outlineLayer);
-if(o.length>1)outlineLayer=L.polygon(o,{fillOpacity:0.05}).addTo(map);
+function clearData() {
+  if(confirm("Wirklich alles löschen?")) {
+    localStorage.clear();
+    location.reload();
+  }
 }
 
-function addSwim(){
-navigator.geolocation.getCurrentPosition(pos=>{
-let swim={lat:pos.coords.latitude,lng:pos.coords.longitude,name:"Swim "+(lakes[currentLake].swims.length+1)};
-lakes[currentLake].swims.push(swim);
-save();renderSwims();
-})
-}
+map.on(L.Draw.Event.CREATED, function (event) {
+  let layer = event.layer;
+  drawnItems.addLayer(layer);
+});
 
-function renderSwims(){
-let sel=swimSelect;sel.innerHTML="";
-lakes[currentLake].swims.forEach((s,i)=>{
-let o=document.createElement("option");
-o.value=i;o.textContent=s.name;
-sel.appendChild(o);
-})
-}
-
-function changeSwim(){drawGrid()}
-
-function generateGrid(){
-let lake=lakes[currentLake];
-lake.grid=[];
-let swim=lake.swims[swimSelect.value];
-if(!swim)return;
-
-let startR=+startR.value,maxR=+maxR.value,stepR=+stepR.value,angleStep=+angleStep.value;
-
-for(let r=startR;r<=maxR;r+=stepR){
-for(let a=0;a<360;a+=angleStep){
-let p=dest(swim.lat,swim.lng,a,r);
-lake.grid.push({lat:p.lat,lng:p.lng,depth:null});
-}
-}
-save();drawGrid();
-}
-
-function depthColor(d){
-if(d<1)return"#f7e26b";
-if(d<2)return"#b6e36b";
-if(d<3)return"#6bd1e3";
-if(d<4)return"#3a7bd5";
-return"#1f3c88";
-}
-
-function drawGrid(){
-if(!currentLake)return;
-if(window.gridLayer){gridLayer.forEach(m=>map.removeLayer(m))}
-gridLayer=[];
-let lake=lakes[currentLake];
-let swim=lake.swims[swimSelect.value];
-if(!swim)return;
-
-lake.grid.forEach(p=>{
-let m=L.circleMarker([p.lat,p.lng],{radius:5,color:p.depth?depthColor(p.depth):"#999"}).addTo(map);
-m.on("click",()=>selectPoint(p));
-gridLayer.push(m);
-})
-}
-
-function selectPoint(p){
-selectedPoint=p;
-let swim=lakes[currentLake].swims[swimSelect.value];
-let d=hav(swim,p);
-let b=bearing(swim,p);
-dist.textContent=d.toFixed(1)+"m";
-bear.textContent=b.toFixed(0)+"°";
-wraps.textContent=(d/3.6).toFixed(1);
-updateNeedle(b);
-}
-
-function saveDepth(){
-if(!selectedPoint)return;
-let d=parseFloat(depth.value);
-if(!d)return;
-selectedPoint.depth=d;
-save();drawGrid();updateHeat();
-}
-
-function updateHeat(){
-if(heatLayer)map.removeLayer(heatLayer);
-let data=[];
-lakes[currentLake].grid.forEach(p=>{
-if(p.depth)data.push([p.lat,p.lng,p.depth]);
-})
-heatLayer=L.heatLayer(data,{radius:30,blur:25});
-}
-
-function toggleHeat(){
-if(!heatLayer)return;
-if(map.hasLayer(heatLayer))map.removeLayer(heatLayer);
-else map.addLayer(heatLayer);
-}
-
-function updateNeedle(targetBearing){
-if(heading==null)return;
-let angle=clamp360(targetBearing-heading);
-needle.style.transform="translate(-50%,-100%) rotate("+angle+"deg)";
-}
-
-window.addEventListener("deviceorientation",e=>{
-if(e.webkitCompassHeading)heading=e.webkitCompassHeading;
-else if(e.alpha!=null)heading=360-e.alpha;
-})
+loadData();
 
 </script>
 

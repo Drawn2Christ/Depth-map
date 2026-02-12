@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Radial Depth Mapper</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Heatmap Plugin -->
+<script src="https://cdn.jsdelivr.net/npm/leaflet.heat/dist/leaflet-heat.js"></script>
+
+<style>
+body{margin:0;font-family:-apple-system,system-ui}
+#map{height:55vh;min-height:340px}
+.panel{padding:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+button,input{padding:8px;border-radius:8px;border:1px solid #ccc}
+.card{border:1px solid #ddd;padding:8px;border-radius:8px;margin:6px 0}
+.mono{font-family:monospace}
+</style>
+</head>
+
+<body>
+
+<div id="map"></div>
+
+<div class="panel">
+
+<div class="row">
+<button onclick="setSwim()">📍 Swim setzen</button>
+</div>
+
+<div class="row">
+<label>Start Radius</label>
+<input id="startR" type="number" value="20">
+<label>Max Radius</label>
+<input id="maxR" type="number" value="80">
+<label>Schritt</label>
+<input id="stepR" type="number" value="10">
+<label>Winkel Schritt</label>
+<input id="angleStep" type="number" value="20">
+<button onclick="generateGrid()">🟢 Kreis Raster</button>
+</div>
+
+<div class="row">
+<input id="depth" placeholder="Tiefe (m)">
+<button onclick="saveDepth()">💾 Tiefe speichern</button>
+<button onclick="toggleHeat()">🌡 Heatmap</button>
+</div>
+
+<div id="info" class="card"></div>
+
+</div>
+
+<script>
+
+let map=L.map('map').setView([52.85,8.05],12);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
+subdomains:'abcd',
+maxZoom:19
+}).addTo(map);
+
+let swim=null;
+let grid=[];
+let markers=[];
+let heatLayer=null;
+let selectedPoint=null;
+
+function toRad(d){return d*Math.PI/180}
+function toDeg(r){return r*180/Math.PI}
+
+function destination(lat,lng,bearing,dist){
+let R=6371000;
+let br=toRad(bearing);
+let lat1=toRad(lat);
+let lng1=toRad(lng);
+let dr=dist/R;
+
+let lat2=Math.asin(Math.sin(lat1)*Math.cos(dr)+Math.cos(lat1)*Math.sin(dr)*Math.cos(br));
+let lng2=lng1+Math.atan2(Math.sin(br)*Math.sin(dr)*Math.cos(lat1),Math.cos(dr)-Math.sin(lat1)*Math.sin(lat2));
+
+return {lat:toDeg(lat2),lng:toDeg(lng2)};
+}
+
+function setSwim(){
+navigator.geolocation.getCurrentPosition(pos=>{
+swim={lat:pos.coords.latitude,lng:pos.coords.longitude};
+L.marker(swim).addTo(map).bindPopup("Swim");
+map.setView([swim.lat,swim.lng],16);
+});
+}
+
+function generateGrid(){
+if(!swim)return alert("Erst Swim setzen");
+
+clearGrid();
+
+let startR=+startR.value;
+let maxR=+maxR.value;
+let stepR=+stepR.value;
+let angleStep=+angleStep.value;
+
+for(let r=startR;r<=maxR;r+=stepR){
+for(let a=0;a<360;a+=angleStep){
+let p=destination(swim.lat,swim.lng,a,r);
+let point={lat:p.lat,lng:p.lng,radius:r,angle:a,depth:null};
+grid.push(point);
+
+let marker=L.circleMarker([p.lat,p.lng],{
+radius:4,
+color:"#999",
+fillOpacity:0.5
+}).addTo(map);
+
+marker.on("click",()=>selectPoint(point,marker));
+markers.push(marker);
+}
+}
+
+updateInfo();
+}
+
+function selectPoint(point,marker){
+selectedPoint=point;
+document.getElementById("info").innerHTML=
+"Radius: "+point.radius+"m<br>Winkel: "+point.angle+"°";
+}
+
+function saveDepth(){
+if(!selectedPoint)return alert("Punkt auswählen");
+
+let d=parseFloat(depth.value);
+if(!d)return alert("Tiefe eingeben");
+
+selectedPoint.depth=d;
+
+updateMarkers();
+updateHeat();
+depth.value="";
+}
+
+function updateMarkers(){
+markers.forEach((m,i)=>{
+let p=grid[i];
+if(p.depth){
+m.setStyle({color:depthColor(p.depth),fillColor:depthColor(p.depth)});
+}
+});
+}
+
+function depthColor(d){
+if(d<1)return "#f7e26b";
+if(d<2)return "#b6e36b";
+if(d<3)return "#6bd1e3";
+if(d<4)return "#3a7bd5";
+return "#1f3c88";
+}
+
+function updateHeat(){
+if(heatLayer)map.removeLayer(heatLayer);
+
+let heatPoints=[];
+grid.forEach(p=>{
+if(p.depth){
+heatPoints.push([p.lat,p.lng,p.depth]);
+}
+});
+
+heatLayer=L.heatLayer(heatPoints,{radius:25,blur:20});
+}
+
+function toggleHeat(){
+if(!heatLayer)return;
+if(map.hasLayer(heatLayer)){
+map.removeLayer(heatLayer);
+}else{
+map.addLayer(heatLayer);
+}
+}
+
+function clearGrid(){
+markers.forEach(m=>map.removeLayer(m));
+markers=[];
+grid=[];
+if(heatLayer)map.removeLayer(heatLayer);
+}
+
+function updateInfo(){
+document.getElementById("info").innerHTML=
+"Punkte: "+grid.length;
+}
+
+</script>
+
+</body>
+</html>

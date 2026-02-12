@@ -1,404 +1,178 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tiefenkarten App (Swim Ringe + Wurfpunkte)</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Tiefenkarten PRO</title>
 
-  <!-- Leaflet (gepinnt) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
-  <!-- Leaflet.heat (gepinnt) -->
-  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
 
-  <style>
-    body { margin:0; font-family: Arial, sans-serif; }
-    #map { height: 88vh; }
-    .controls {
-      padding: 10px;
-      background: #f4f4f4;
-      display:flex;
-      gap:8px;
-      flex-wrap:wrap;
-      align-items:center;
-    }
-    button { padding: 7px 12px; cursor:pointer; }
-    .hint { font-size: 13px; opacity: 0.8; }
-    .pill { padding:4px 8px; background:#e9e9e9; border-radius:999px; font-size:12px; }
-  </style>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+
+<style>
+body { margin:0; font-family:Arial; }
+#map { height:90vh; }
+.controls { padding:10px; background:#f4f4f4; display:flex; gap:10px; flex-wrap:wrap; }
+button { padding:6px 12px; cursor:pointer; }
+</style>
 </head>
 <body>
 
-  <div class="controls">
-    <button id="btnCreateSwim">Swim + Ringe erstellen</button>
-    <button id="btnExport">Export (JSON)</button>
-    <button id="btnImport">Import (JSON)</button>
-    <button id="btnClear">Alles löschen</button>
+<div class="controls">
+<button id="btnSwim">Swim + Ringe erstellen</button>
+<button id="btnClear">Alles löschen</button>
+</div>
 
-    <span class="hint">
-      Klick auf Wurfpunkt: Tiefe eintragen. Optional: normal auf Karte klicken = freier Tiefenpunkt.
-    </span>
-    <span class="pill" id="stats"></span>
-
-    <input id="fileInput" type="file" accept="application/json" style="display:none;" />
-  </div>
-
-  <div id="map"></div>
+<div id="map"></div>
 
 <script>
-  // -----------------------------
-  // Basics
-  // -----------------------------
-  const map = L.map('map').setView([51.0, 10.0], 6);
+const map = L.map("map").setView([51,10],6);
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap'
-  }).addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+maxZoom:19
+}).addTo(map);
 
-  // -----------------------------
-  // Storage Keys
-  // -----------------------------
-  const LS_KEYS = {
-    swims: "swims_v2",
-    rings: "rings_v2",         // Visual ring config per swim
-    castPoints: "castPoints_v2", // Auto-generated cast points
-    depthPoints: "depthPoints_v2" // Depth entries (by cast point OR manual)
-  };
+const drawnItems = new L.FeatureGroup().addTo(map);
 
-  let swims = JSON.parse(localStorage.getItem(LS_KEYS.swims) || "[]");
-  let rings = JSON.parse(localStorage.getItem(LS_KEYS.rings) || "[]");
-  let castPoints = JSON.parse(localStorage.getItem(LS_KEYS.castPoints) || "[]");
-  let depthPoints = JSON.parse(localStorage.getItem(LS_KEYS.depthPoints) || "[]");
+const drawControl = new L.Control.Draw({
+draw:{
+polygon:true,
+polyline:false,
+rectangle:false,
+circle:false,
+marker:false,
+circlemarker:false
+},
+edit:{featureGroup:drawnItems}
+});
+map.addControl(drawControl);
 
-  function saveAll() {
-    localStorage.setItem(LS_KEYS.swims, JSON.stringify(swims));
-    localStorage.setItem(LS_KEYS.rings, JSON.stringify(rings));
-    localStorage.setItem(LS_KEYS.castPoints, JSON.stringify(castPoints));
-    localStorage.setItem(LS_KEYS.depthPoints, JSON.stringify(depthPoints));
-    updateStats();
-  }
+let lakePolygon = null;
+let swim = null;
+let castPoints = [];
+let depthPoints = [];
+let heatLayer = null;
 
-  // -----------------------------
-  // Layers
-  // -----------------------------
-  const swimLayer = L.layerGroup().addTo(map);
-  const ringLayer = L.layerGroup().addTo(map);
-  const castLayer = L.layerGroup().addTo(map);
-  const depthLayer = L.layerGroup().addTo(map);
+map.on(L.Draw.Event.CREATED,function(e){
+drawnItems.clearLayers();
+drawnItems.addLayer(e.layer);
+lakePolygon = e.layer;
+});
 
-  let heatLayer = null;
+function pointInPolygon(latlng){
+if(!lakePolygon) return false;
+return leafletPip.pointInLayer(latlng,lakePolygon).length > 0;
+}
 
-  // -----------------------------
-  // Helpers (Geo)
-  // -----------------------------
-  const R = 6371000; // Earth radius meters
+/* LeafletPip minimal */
+const leafletPip = {
+pointInLayer:function(p,layer){
+let results=[];
+layer.eachLayer?layer.eachLayer(l=>{
+if(leafletPip.pointInLayer(p,l).length)results.push(l);
+}):(
+leafletPip._pointInPolygon(p,layer.getLatLngs()[0])&&results.push(layer)
+);
+return results;
+},
+_pointInPolygon:function(point,vs){
+let x=point.lat,y=point.lng;
+let inside=false;
+for(let i=0,j=vs.length-1;i<vs.length;j=i++){
+let xi=vs[i].lat,yi=vs[i].lng;
+let xj=vs[j].lat,yj=vs[j].lng;
+let intersect=((yi>y)!=(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi);
+if(intersect)inside=!inside;
+}
+return inside;
+}
+};
 
-  function deg2rad(d) { return d * Math.PI / 180; }
-  function rad2deg(r) { return r * 180 / Math.PI; }
+const R=6371000;
+function dest(lat,lng,dist,bearing){
+let br=bearing*Math.PI/180;
+let lat1=lat*Math.PI/180;
+let lon1=lng*Math.PI/180;
+let dr=dist/R;
+let lat2=Math.asin(Math.sin(lat1)*Math.cos(dr)+Math.cos(lat1)*Math.sin(dr)*Math.cos(br));
+let lon2=lon1+Math.atan2(Math.sin(br)*Math.sin(dr)*Math.cos(lat1),Math.cos(dr)-Math.sin(lat1)*Math.sin(lat2));
+return [lat2*180/Math.PI,lon2*180/Math.PI];
+}
 
-  // Returns [lat, lng] from start lat/lng, distance (m), bearing (deg)
-  function destinationPoint(lat, lng, distance, bearingDeg) {
-    const brng = deg2rad(bearingDeg);
-    const lat1 = deg2rad(lat);
-    const lon1 = deg2rad(lng);
-    const dr = distance / R;
+document.getElementById("btnSwim").addEventListener("click",()=>{
+if(!lakePolygon){alert("Erst Polygon zeichnen!");return;}
 
-    const lat2 = Math.asin(
-      Math.sin(lat1) * Math.cos(dr) +
-      Math.cos(lat1) * Math.sin(dr) * Math.cos(brng)
-    );
+alert("Swim setzen");
+map.once("click",e=>{
+swim=e.latlng;
+L.marker(swim).addTo(map).bindPopup("Swim");
 
-    const lon2 = lon1 + Math.atan2(
-      Math.sin(brng) * Math.sin(dr) * Math.cos(lat1),
-      Math.cos(dr) - Math.sin(lat1) * Math.sin(lat2)
-    );
+let maxRadius=parseFloat(prompt("Max Radius (m):","120"));
+let lines=parseInt(prompt("Anzahl Linien:","6"));
+let spacing=parseFloat(prompt("Punktabstand (m):","10"));
 
-    return [rad2deg(lat2), rad2deg(lon2)];
-  }
+let step=maxRadius/lines;
 
-  function fmt(n) {
-    return (Math.round(n * 100) / 100).toString().replace(".", ",");
-  }
+for(let i=1;i<=lines;i++){
+let r=step*i;
+L.circle(swim,{radius:r,color:"#333",weight:1,fill:false}).addTo(map);
 
-  // -----------------------------
-  // Rendering
-  // -----------------------------
-  function renderSwims() {
-    swimLayer.clearLayers();
-    swims.forEach((s, idx) => {
-      L.marker([s.lat, s.lng])
-        .addTo(swimLayer)
-        .bindPopup(`<b>Swim #${idx+1}</b><br>${s.name || ""}`);
-    });
-  }
+let circumference=2*Math.PI*r;
+let count=Math.max(4,Math.round(circumference/spacing));
+let angleStep=360/count;
 
-  function renderRings() {
-    ringLayer.clearLayers();
-    rings.forEach(r => {
-      L.circle([r.lat, r.lng], {
-        radius: r.radius,
-        color: "#333",
-        weight: 1,
-        opacity: 0.7,
-        fill: false
-      }).addTo(ringLayer)
-        .bindPopup(`Ring: ${Math.round(r.radius)} m`);
-    });
-  }
+for(let k=0;k<count;k++){
+let bearing=k*angleStep;
+let p=dest(swim.lat,swim.lng,r,bearing);
+let latlng=L.latLng(p[0],p[1]);
 
-  function renderCastPoints() {
-    castLayer.clearLayers();
+if(pointInPolygon(latlng)){
+let marker=L.circleMarker(latlng,{radius:5,color:"#666"}).addTo(map);
+castPoints.push({lat:p[0],lng:p[1]});
 
-    castPoints.forEach(p => {
-      const hasDepth = depthPoints.some(d => d.castId === p.id);
-      const marker = L.circleMarker([p.lat, p.lng], {
-        radius: 5,
-        weight: 1,
-        opacity: 0.9,
-        fillOpacity: 0.9,
-        // kein festes color styling gefordert, aber Leaflet braucht eins:
-        color: hasDepth ? "#0a7" : "#777",
-        fillColor: hasDepth ? "#0a7" : "#bbb"
-      }).addTo(castLayer);
+marker.on("click",()=>{
+let d=parseFloat(prompt("Tiefe (m):"));
+if(!isNaN(d)){
+depthPoints.push({lat:p[0],lng:p[1],depth:d});
+updateHeat();
+}
+});
+}
+}
+}
+});
+});
 
-      marker.bindPopup(() => {
-        const dp = depthPoints.find(d => d.castId === p.id);
-        const depthText = dp ? `<b>Tiefe:</b> ${fmt(dp.depth)} m` : `<i>Keine Tiefe gesetzt</i>`;
-        return `
-          <b>Wurfpunkt</b><br>
-          Ring: ${p.ringIndex}/${p.ringsTotal} – Radius: ${Math.round(p.radius)} m<br>
-          ${depthText}<br><br>
-          <button onclick="window.__setDepthForCast('${p.id}')">Tiefe setzen/ändern</button>
-        `;
-      });
-    });
-  }
+function updateHeat(){
+if(heatLayer) map.removeLayer(heatLayer);
 
-  function renderDepthPointsManual() {
-    depthLayer.clearLayers();
+let heatData=depthPoints.map(p=>{
+let normalized=Math.min(15,Math.max(1,p.depth))/15;
+return [p.lat,p.lng,normalized];
+});
 
-    // manual points are those without castId
-    depthPoints.filter(d => !d.castId).forEach((d, idx) => {
-      L.circleMarker([d.lat, d.lng], { radius: 5 })
-        .addTo(depthLayer)
-        .bindPopup(`Freier Punkt #${idx+1}<br>Tiefe: ${fmt(d.depth)} m`);
-    });
-  }
+heatLayer=L.heatLayer(heatData,{
+radius:30,
+blur:20,
+maxZoom:17,
+gradient:{
+0.0:"blue",
+0.3:"cyan",
+0.5:"lime",
+0.7:"yellow",
+0.85:"orange",
+1.0:"red"
+}
+}).addTo(map);
+}
 
-  function updateHeatmap() {
-    if (heatLayer) map.removeLayer(heatLayer);
-
-    // Heat weight: depth. (Optional später invertieren/skalieren)
-    const heatData = depthPoints
-      .filter(d => Number.isFinite(d.depth))
-      .map(d => [d.lat, d.lng, Math.max(0.1, d.depth)]);
-
-    heatLayer = L.heatLayer(heatData, {
-      radius: 25,
-      blur: 18,
-      maxZoom: 17
-    }).addTo(map);
-  }
-
-  function updateStats() {
-    const done = depthPoints.filter(d => d.castId).length;
-    const total = castPoints.length;
-    document.getElementById("stats").textContent =
-      `Wurfpunkte: ${total} | Tiefen gesetzt: ${done} | Freie Tiefenpunkte: ${depthPoints.filter(d=>!d.castId).length}`;
-  }
-
-  // -----------------------------
-  // Depth setting for cast points
-  // -----------------------------
-  window.__setDepthForCast = function(castId) {
-    const p = castPoints.find(x => x.id === castId);
-    if (!p) return;
-
-    const existing = depthPoints.find(d => d.castId === castId);
-    const prefill = existing ? String(existing.depth).replace(".", ",") : "";
-    const val = prompt("Tiefe in Metern eingeben (z.B. 3,2):", prefill);
-    if (val === null) return;
-
-    const depth = parseFloat(String(val).replace(",", "."));
-    if (!Number.isFinite(depth)) {
-      alert("Ungültige Zahl.");
-      return;
-    }
-
-    if (existing) {
-      existing.depth = depth;
-    } else {
-      depthPoints.push({ castId, lat: p.lat, lng: p.lng, depth });
-    }
-
-    saveAll();
-    renderCastPoints();
-    updateHeatmap();
-  };
-
-  // -----------------------------
-  // Create Swim + Rings + Cast points
-  // -----------------------------
-  document.getElementById("btnCreateSwim").addEventListener("click", () => {
-    alert("Klicke auf die Karte, um deinen Swim zu setzen.");
-    map.once("click", (e) => {
-      const name = prompt("Swim Name (optional):", "") || "";
-
-      // Abfragen beim Erstellen:
-      const radiusStr = prompt("Max-Radius in Metern (z.B. 120):", "120");
-      if (radiusStr === null) return;
-      const maxRadius = parseFloat(String(radiusStr).replace(",", "."));
-      if (!Number.isFinite(maxRadius) || maxRadius <= 0) {
-        alert("Ungültiger Radius.");
-        return;
-      }
-
-      const linesStr = prompt("Anzahl Linien/Kreise (z.B. 6):", "6");
-      if (linesStr === null) return;
-      const lines = parseInt(linesStr, 10);
-      if (!Number.isFinite(lines) || lines < 1) {
-        alert("Ungültige Linienanzahl.");
-        return;
-      }
-
-      const spacingStr = prompt("Punktabstand entlang der Kreise in Metern (z.B. 10):", "10");
-      if (spacingStr === null) return;
-      const pointSpacing = parseFloat(String(spacingStr).replace(",", "."));
-      if (!Number.isFinite(pointSpacing) || pointSpacing <= 0) {
-        alert("Ungültiger Punktabstand.");
-        return;
-      }
-
-      // Save swim
-      const swimId = crypto.randomUUID();
-      swims.push({ id: swimId, name, lat: e.latlng.lat, lng: e.latlng.lng, maxRadius, lines, pointSpacing });
-
-      // Create rings
-      const step = maxRadius / lines; // gleichmäßig bis maxRadius
-      for (let i = 1; i <= lines; i++) {
-        const r = step * i;
-        rings.push({ swimId, lat: e.latlng.lat, lng: e.latlng.lng, radius: r });
-      }
-
-      // Create cast points on each ring: pointsCount = circumference / spacing
-      // circumference = 2πr; count >= 4
-      for (let i = 1; i <= lines; i++) {
-        const r = step * i;
-        const circumference = 2 * Math.PI * r;
-        const count = Math.max(4, Math.round(circumference / pointSpacing));
-        const angleStep = 360 / count;
-
-        for (let k = 0; k < count; k++) {
-          const bearing = k * angleStep;
-          const [lat2, lng2] = destinationPoint(e.latlng.lat, e.latlng.lng, r, bearing);
-
-          castPoints.push({
-            id: crypto.randomUUID(),
-            swimId,
-            ringIndex: i,
-            ringsTotal: lines,
-            radius: r,
-            lat: lat2,
-            lng: lng2
-          });
-        }
-      }
-
-      saveAll();
-
-      // Render
-      renderSwims();
-      renderRings();
-      renderCastPoints();
-      updateHeatmap();
-
-      // Zoom to swim area
-      map.setView([e.latlng.lat, e.latlng.lng], 16);
-      alert("Fertig: Ringe + Wurfpunkte erstellt. Klick auf einen Wurfpunkt, um die Tiefe einzutragen.");
-    });
-  });
-
-  // -----------------------------
-  // Optional: manual depth point by clicking empty map
-  // (If you want ONLY cast points: sag Bescheid, dann schalte ich das aus.)
-  // -----------------------------
-  map.on("click", (e) => {
-    // Wenn gerade der Swim-Set-Listener aktiv war, läuft er via map.once und ist danach weg.
-    // Manual point:
-    const depthStr = prompt("Freier Tiefenpunkt: Tiefe in Metern (Abbrechen = kein Punkt):");
-    if (depthStr === null) return;
-    const depth = parseFloat(String(depthStr).replace(",", "."));
-    if (!Number.isFinite(depth)) {
-      alert("Ungültige Zahl.");
-      return;
-    }
-    depthPoints.push({ lat: e.latlng.lat, lng: e.latlng.lng, depth });
-    saveAll();
-    renderDepthPointsManual();
-    updateHeatmap();
-  });
-
-  // -----------------------------
-  // Export / Import / Clear
-  // -----------------------------
-  document.getElementById("btnExport").addEventListener("click", () => {
-    const data = { version: 2, swims, rings, castPoints, depthPoints };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "tiefenkarte-export.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-
-  const fileInput = document.getElementById("fileInput");
-  document.getElementById("btnImport").addEventListener("click", () => fileInput.click());
-
-  fileInput.addEventListener("change", async () => {
-    const file = fileInput.files?.[0];
-    if (!file) return;
-
-    try {
-      const text = await file.text();
-      const data = JSON.parse(text);
-
-      swims = Array.isArray(data.swims) ? data.swims : [];
-      rings = Array.isArray(data.rings) ? data.rings : [];
-      castPoints = Array.isArray(data.castPoints) ? data.castPoints : [];
-      depthPoints = Array.isArray(data.depthPoints) ? data.depthPoints : [];
-
-      saveAll();
-      renderSwims();
-      renderRings();
-      renderCastPoints();
-      renderDepthPointsManual();
-      updateHeatmap();
-      alert("Import erfolgreich.");
-    } catch (e) {
-      alert("Import fehlgeschlagen: " + e.message);
-    } finally {
-      fileInput.value = "";
-    }
-  });
-
-  document.getElementById("btnClear").addEventListener("click", () => {
-    if (!confirm("Wirklich alles löschen?")) return;
-    Object.values(LS_KEYS).forEach(k => localStorage.removeItem(k));
-    location.reload();
-  });
-
-  // -----------------------------
-  // Initial render
-  // -----------------------------
-  renderSwims();
-  renderRings();
-  renderCastPoints();
-  renderDepthPointsManual();
-  updateHeatmap();
-  updateStats();
-
+document.getElementById("btnClear").addEventListener("click",()=>{
+location.reload();
+});
 </script>
+
 </body>
 </html>

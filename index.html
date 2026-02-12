@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Tiefenkarten App</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw/dist/leaflet.draw.css"/>
+
+<style>
+body { margin:0; font-family:Arial; }
+#map { height: 90vh; }
+.controls {
+  padding:10px;
+  background:#f4f4f4;
+}
+button {
+  padding:6px 10px;
+  margin-right:5px;
+}
+</style>
+</head>
+<body>
+
+<div class="controls">
+  <button onclick="setSwim()">Swim setzen</button>
+  <button onclick="clearData()">Alles löschen</button>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw/dist/leaflet.draw.js"></script>
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+
+<script>
+
+let map = L.map('map').setView([51.0, 10.0], 6);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap'
+}).addTo(map);
+
+let drawnItems = new L.FeatureGroup();
+map.addLayer(drawnItems);
+
+let drawControl = new L.Control.Draw({
+  draw: {
+    polygon: true,
+    polyline: false,
+    rectangle: false,
+    circle: false,
+    marker: false
+  },
+  edit: {
+    featureGroup: drawnItems
+  }
+});
+map.addControl(drawControl);
+
+let swimLocations = JSON.parse(localStorage.getItem("swims")) || [];
+let depthPoints = JSON.parse(localStorage.getItem("depthPoints")) || [];
+
+let heatLayer;
+
+function saveData() {
+  localStorage.setItem("swims", JSON.stringify(swimLocations));
+  localStorage.setItem("depthPoints", JSON.stringify(depthPoints));
+}
+
+function loadData() {
+  swimLocations.forEach(s => {
+    L.marker([s.lat, s.lng], {color:"green"}).addTo(map).bindPopup("Swim");
+  });
+
+  depthPoints.forEach(p => {
+    let marker = L.circleMarker([p.lat, p.lng], {radius:5})
+      .addTo(map)
+      .bindPopup("Tiefe: " + p.depth + " m");
+  });
+
+  updateHeatmap();
+}
+
+function setSwim() {
+  alert("Klicke auf die Karte um deinen Swim zu setzen.");
+  map.once('click', function(e) {
+    let marker = L.marker(e.latlng).addTo(map).bindPopup("Swim").openPopup();
+    swimLocations.push({lat:e.latlng.lat, lng:e.latlng.lng});
+    saveData();
+  });
+}
+
+map.on('click', function(e) {
+  let depth = prompt("Tiefe in Metern eingeben:");
+  if(depth !== null && depth !== "") {
+    let marker = L.circleMarker(e.latlng, {radius:5})
+      .addTo(map)
+      .bindPopup("Tiefe: " + depth + " m");
+
+    depthPoints.push({
+      lat: e.latlng.lat,
+      lng: e.latlng.lng,
+      depth: parseFloat(depth)
+    });
+
+    saveData();
+    updateHeatmap();
+  }
+});
+
+function updateHeatmap() {
+  if(heatLayer) {
+    map.removeLayer(heatLayer);
+  }
+
+  let heatData = depthPoints.map(p => {
+    return [p.lat, p.lng, p.depth];
+  });
+
+  heatLayer = L.heatLayer(heatData, {
+    radius: 25,
+    blur: 15,
+    maxZoom: 17
+  }).addTo(map);
+}
+
+function clearData() {
+  if(confirm("Wirklich alles löschen?")) {
+    localStorage.clear();
+    location.reload();
+  }
+}
+
+map.on(L.Draw.Event.CREATED, function (event) {
+  let layer = event.layer;
+  drawnItems.addLayer(layer);
+});
+
+loadData();
+
+</script>
+
+</body>
+</html>
